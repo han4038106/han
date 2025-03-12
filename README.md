@@ -1,6 +1,7 @@
 # han
 headname
 ##git꺼리문화
+##탄불출에 따른 필요 품목을 배정해주는 코드
 
 
 import java.util.ArrayList;
