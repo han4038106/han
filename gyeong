@@ -1,0 +1,104 @@
+import requests
+import pandas as pd
+import numpy as np
+import time
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_absolute_error
+import oandapyV20
+import oandapyV20.endpoints.orders as orders
+
+# OANDA API 설정 (자동매매를 위한 계정 정보 입력)
+ACCOUNT_ID = "YOUR_ACCOUNT_ID"
+ACCESS_TOKEN = "YOUR_OANDA_ACCESS_TOKEN"
+api = oandapyV20.API(access_token=ACCESS_TOKEN)
+
+# 목표 수익률 (%) 설정
+TARGET_PROFIT_PERCENT = 5.0  # 5% 수익 목표
+initial_balance = 10000  # 초기 투자금 (가정)
+
+# 📌 1. 실시간 환율 데이터 가져오기
+def get_exchange_rates():
+    url = "https://api.exchangerate-api.com/v4/latest/USD"
+    response = requests.get(url).json()
+    
+    usd_krw = response["rates"]["KRW"]
+    usd_jpy = response["rates"]["JPY"]
+    
+    url_jpy = "https://api.exchangerate-api.com/v4/latest/JPY"
+    response_jpy = requests.get(url_jpy).json()
+    jpy_krw = response_jpy["rates"]["KRW"]
+    
+    return usd_krw, usd_jpy, jpy_krw
+
+# 📌 2. 머신러닝 기반 환율 예측 모델 (기존 코드 유지)
+def train_exchange_model(data):
+    X = data[["USD/KRW Change", "USD/JPY Change", "JPY/KRW Change"]].shift(1).dropna()
+    y = data["USD/KRW Change"].iloc[1:]
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    error = mean_absolute_error(y_test, y_pred)
+
+    print(f"환율 예측 모델 성능 (MAE): {error}")
+    return model
+
+# 📌 3. 삼각 차익 거래 기회 탐색
+def find_arbitrage_opportunity(usd_krw, usd_jpy, jpy_krw):
+    theoretical_krw = (1 / usd_jpy) * jpy_krw * usd_krw
+    profit_percent = ((theoretical_krw - usd_krw) / usd_krw) * 100
+
+    if profit_percent > 0.1:
+        print(f"📢 차익 거래 기회 발생! 예상 수익률: {profit_percent:.2f}%")
+        return True, profit_percent
+    else:
+        print("📉 차익 거래 기회 없음.")
+        return False, 0
+
+# 📌 4. OANDA API를 통한 자동매매 실행
+def execute_trade(instrument, units, direction):
+    order_data = {
+        "order": {
+            "instrument": instrument,
+            "units": units if direction == "buy" else -units,
+            "type": "MARKET",
+            "positionFill": "DEFAULT"
+        }
+    }
+    
+    trade = orders.OrderCreate(accountID=ACCOUNT_ID, data=order_data)
+    response = api.request(trade)
+    print(f"💰 자동매매 실행: {instrument}, {direction}, {units} units")
+    return response
+
+# 📌 5. 수익률 계산 (현재 자산 대비 목표 수익률 확인)
+def calculate_profit(current_balance):
+    profit_percent = ((current_balance - initial_balance) / initial_balance) * 100
+    return profit_percent
+
+# 📌 6. 자동매매 시스템 실행 (목표 수익률 도달 전까지 반복)
+current_balance = initial_balance
+while True:
+    usd_krw, usd_jpy, jpy_krw = get_exchange_rates()
+    arbitrage, profit = find_arbitrage_opportunity(usd_krw, usd_jpy, jpy_krw)
+
+    if arbitrage:
+        execute_trade("USD_KRW", 1000, "buy")
+        execute_trade("USD_JPY", 1000, "sell")
+        execute_trade("JPY_KRW", 1000, "buy")
+        
+        current_balance *= (1 + profit / 100)  # 수익 반영
+
+    # 현재 수익률 확인
+    current_profit_percent = calculate_profit(current_balance)
+    print(f"📊 현재 수익률: {current_profit_percent:.2f}%")
+
+    if current_profit_percent >= TARGET_PROFIT_PERCENT:
+        print(f"🎯 목표 수익률 {TARGET_PROFIT_PERCENT}% 달성! 자동매매 종료.")
+        break
+
+    time.sleep(10)  # 10초마다 실행
